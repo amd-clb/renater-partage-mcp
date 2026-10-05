@@ -5,6 +5,13 @@ management of Renater Partage academic mailboxes (`prenom.nom@example.edu`,
 `prenom.nom@example2.edu`, or any configured Renater domain) over IMAP
 (read, folders, attachments) and SMTP (send).
 
+> **Warning — this connector can send mail.** With the default
+> `readonly: false`, an AI agent (or anything with access to it) can **send,
+> delete, move and flag mail on your behalf**, authenticated with your Renater
+> SSO password. You are responsible for every action taken with your account.
+> If you only need to read mail, set `readonly: true` in `config.yaml` — see
+> [Read-only mode](#read-only-mode).
+
 ## Setup
 
 Requires Python >= 3.11 and [uv](https://docs.astral.sh/uv/).
@@ -13,6 +20,7 @@ Requires Python >= 3.11 and [uv](https://docs.astral.sh/uv/).
 uv sync
 cp .env.example .env
 chmod 600 .env
+cp config.yaml.example config.yaml
 ```
 
 Edit `.env` and set your mailbox password:

@@ -1,0 +1,27 @@
+# Copy this file to `config.yaml` and fill in your values.
+# config.yaml contains NO secrets (passwords live only in .env).
+
+accounts:
+  # List one or more account emails. Passwords are matched by order:
+  #   account #1 -> RENATER_PASSWORD
+  #   account #2 -> RENATER_PASSWORD_2
+  #   account #3 -> RENATER_PASSWORD_3
+  - email: prenom.nom@example.edu
+  - email: prenom.nom@example2.edu
+
+# Map each domain to its IMAP/SMTP host.
+domains:
+  example.edu: mail.example.edu
+  example2.edu: mail.example.edu
+
+# Connection settings (defaults shown).
+imap:
+  port: 993
+  ssl: true
+smtp:
+  port: 465
+  ssl: true
+
+# Set to true to expose ONLY read tools (no send/delete/move/flag tools).
+# Recommended if you do not need to write mail.
+readonly: false
