@@ -1,0 +1,11 @@
+accounts:
+  - email: prenom.nom@example.edu
+domains:
+  example.edu: mail.example.edu
+  example2.edu: mail.example.edu
+imap:
+  port: 993
+  ssl: true
+smtp:
+  port: 465
+  ssl: true
