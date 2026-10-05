@@ -1,5 +1,5 @@
 accounts:
-  - email: prenom.nom@example.edu
+  - email: prenom.nom@example2.edu
 domains:
   example.edu: mail.example.edu
   example2.edu: mail.example.edu

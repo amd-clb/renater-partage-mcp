@@ -54,7 +54,9 @@ def load_config(config_path: Path, env_path: Path | None = None) -> Config:
     imap_port = int(imap.get("port", DEFAULT_IMAP_PORT))
     smtp_port = int(smtp.get("port", DEFAULT_SMTP_PORT))
 
-    env_values = dict(dotenv_values(env_path)) if env_path is not None else {}
+    if env_path is None:
+        env_path = config_path.parent / ".env"
+    env_values = dict(dotenv_values(env_path))
 
     accounts_raw = raw.get("accounts") or []
     if not accounts_raw:

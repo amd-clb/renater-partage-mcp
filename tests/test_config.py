@@ -30,6 +30,16 @@ def test_load_config_resolves_hosts(tmp_path):
     assert acc.password == "secret"
 
 
+def test_load_config_defaults_to_env_next_to_config(tmp_path):
+    p = make_config(
+        tmp_path,
+        "  - email: prenom.nom@example.edu\n",
+        "  example.edu: mail.example.edu\n",
+    )
+    cfg = load_config(p)
+    assert cfg.get_account("prenom.nom@example.edu").password == "secret"
+
+
 def test_account_domain_missing_from_map_raises(tmp_path):
     p = make_config(
         tmp_path,
