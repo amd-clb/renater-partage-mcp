@@ -9,10 +9,12 @@ accounts:
   - email: prenom.nom@example.edu
   - email: prenom.nom@example2.edu
 
-# Map each domain to its IMAP/SMTP host.
+# Map each email domain to its IMAP/SMTP host.
+# Renater partage servers follow the pattern: partage.<domain>
+#   e.g. prenom.nom@insa-strasbourg.fr -> partage.insa-strasbourg.fr
 domains:
-  example.edu: mail.example.edu
-  example2.edu: mail.example.edu
+  example.edu: partage.example.edu
+  example2.edu: partage.example2.edu
 
 # Connection settings (defaults shown).
 imap:
