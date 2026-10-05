@@ -15,6 +15,25 @@ def make_config(tmp_path: Path, accounts_yaml: str, domains_yaml: str) -> Path:
     return p
 
 
+def test_load_config_readonly_flag_defaults_false(tmp_path):
+    p = make_config(
+        tmp_path,
+        "  - email: prenom.nom@example.edu\n",
+        "  example.edu: mail.example.edu\n",
+    )
+    assert load_config(p, tmp_path / ".env").readonly is False
+
+
+def test_load_config_readonly_flag_true(tmp_path):
+    p = make_config(
+        tmp_path,
+        "  - email: prenom.nom@example.edu\n",
+        "  example.edu: mail.example.edu\n",
+    )
+    p.write_text(p.read_text() + "readonly: true\n")
+    assert load_config(p, tmp_path / ".env").readonly is True
+
+
 def test_load_config_resolves_hosts(tmp_path):
     p = make_config(
         tmp_path,
@@ -28,6 +47,17 @@ def test_load_config_resolves_hosts(tmp_path):
     assert acc.imap_port == 993
     assert acc.smtp_port == 465
     assert acc.password == "secret"
+
+
+def test_load_config_readonly_flag(tmp_path):
+    p = make_config(
+        tmp_path,
+        "  - email: prenom.nom@example.edu\n",
+        "  example.edu: mail.example.edu\n",
+    )
+    assert load_config(p).readonly is False
+    p.write_text(p.read_text() + "readonly: true\n")
+    assert load_config(p).readonly is True
 
 
 def test_load_config_defaults_to_env_next_to_config(tmp_path):

@@ -20,13 +20,21 @@ def _error_dict(exc: ConnectorError) -> dict:
 
 def create_server() -> MCPServer:
     server = MCPServer(name="renater-partage")
-    state: dict[str, Any] = {"config": None, "connectors": {}}
+    state: dict[str, Any] = {"config": None, "config_error": None, "connectors": {}}
+
+    override = os.environ.get("RENATER_CONFIG_PATH")
+    config_path = Path(override) if override else Path("config.yaml")
+    try:
+        state["config"] = load_config(config_path)
+    except ConnectorError as exc:
+        state["config_error"] = exc
+
+    # Fail-safe: without a readable config only read-only tools are exposed.
+    readonly = state["config"].readonly if state["config"] is not None else True
 
     def get_config() -> Config:
-        if state["config"] is None:
-            override = os.environ.get("RENATER_CONFIG_PATH")
-            config_path = Path(override) if override else Path("config.yaml")
-            state["config"] = load_config(config_path)
+        if state["config_error"] is not None:
+            raise state["config_error"]
         return state["config"]
 
     def get_connector(account_email: str | None) -> MailConnector:
@@ -113,83 +121,89 @@ def create_server() -> MCPServer:
 
         return run(action, account_email)
 
-    @server.tool(description="Send an email with optional cc recipients and attachments.")
-    async def send_message(
-        to: str,
-        subject: str,
-        body: str,
-        cc: list[str] | None = None,
-        attachments: list[str] | None = None,
-        account_email: str | None = None,
-    ) -> dict:
-        cc = list(cc or [])
-        files = [Path(p) for p in (attachments or [])]
+    if not readonly:
 
-        def action(c: MailConnector) -> dict:
-            c.send_message(to, subject, body, cc=cc, attachments=files)
-            return {"sent": True, "to": [to, *cc], "subject": subject}
+        @server.tool(description="Send an email with optional cc recipients and attachments.")
+        async def send_message(
+            to: str,
+            subject: str,
+            body: str,
+            cc: list[str] | None = None,
+            attachments: list[str] | None = None,
+            account_email: str | None = None,
+        ) -> dict:
+            cc = list(cc or [])
+            files = [Path(p) for p in (attachments or [])]
 
-        return run(action, account_email)
+            def action(c: MailConnector) -> dict:
+                c.send_message(to, subject, body, cc=cc, attachments=files)
+                return {"sent": True, "to": [to, *cc], "subject": subject}
 
-    @server.tool(description="Create a folder; intermediate folders must exist.")
-    async def create_folder(name: str, account_email: str | None = None) -> dict:
-        def action(c: MailConnector) -> dict:
-            c.create_folder(name)
-            return {"ok": True, "name": name}
+            return run(action, account_email)
 
-        return run(action, account_email)
+        @server.tool(description="Create a folder; intermediate folders must exist.")
+        async def create_folder(name: str, account_email: str | None = None) -> dict:
+            def action(c: MailConnector) -> dict:
+                c.create_folder(name)
+                return {"ok": True, "name": name}
 
-    @server.tool(description="Rename a folder.")
-    async def rename_folder(
-        old_name: str, new_name: str, account_email: str | None = None
-    ) -> dict:
-        def action(c: MailConnector) -> dict:
-            c.rename_folder(old_name, new_name)
-            return {"ok": True, "old_name": old_name, "new_name": new_name}
+            return run(action, account_email)
 
-        return run(action, account_email)
+        @server.tool(description="Rename a folder.")
+        async def rename_folder(
+            old_name: str, new_name: str, account_email: str | None = None
+        ) -> dict:
+            def action(c: MailConnector) -> dict:
+                c.rename_folder(old_name, new_name)
+                return {"ok": True, "old_name": old_name, "new_name": new_name}
 
-    @server.tool(description="Delete an empty folder.")
-    async def delete_folder(name: str, account_email: str | None = None) -> dict:
-        def action(c: MailConnector) -> dict:
-            c.delete_folder(name)
-            return {"ok": True, "name": name}
+            return run(action, account_email)
 
-        return run(action, account_email)
+        @server.tool(description="Delete an empty folder.")
+        async def delete_folder(name: str, account_email: str | None = None) -> dict:
+            def action(c: MailConnector) -> dict:
+                c.delete_folder(name)
+                return {"ok": True, "name": name}
 
-    @server.tool(description="Move a message to another folder; returns its new UID.")
-    async def move_message(
-        folder: str, uid: str, destination_folder: str, account_email: str | None = None
-    ) -> dict:
-        def action(c: MailConnector) -> dict:
-            new_uid = c.move_message(folder, uid, destination_folder)
-            return {"ok": True, "new_uid": new_uid}
+            return run(action, account_email)
 
-        return run(action, account_email)
+        @server.tool(description="Move a message to another folder; returns its new UID.")
+        async def move_message(
+            folder: str, uid: str, destination_folder: str, account_email: str | None = None
+        ) -> dict:
+            def action(c: MailConnector) -> dict:
+                new_uid = c.move_message(folder, uid, destination_folder)
+                return {"ok": True, "new_uid": new_uid}
 
-    @server.tool(description="Delete a message from a folder.")
-    async def delete_message(folder: str, uid: str, account_email: str | None = None) -> dict:
-        def action(c: MailConnector) -> dict:
-            c.delete_message(folder, uid)
-            return {"ok": True, "uid": uid}
+            return run(action, account_email)
 
-        return run(action, account_email)
+        @server.tool(description="Delete a message from a folder.")
+        async def delete_message(
+            folder: str, uid: str, account_email: str | None = None
+        ) -> dict:
+            def action(c: MailConnector) -> dict:
+                c.delete_message(folder, uid)
+                return {"ok": True, "uid": uid}
 
-    @server.tool(description="Mark a message as read.")
-    async def mark_read(folder: str, uid: str, account_email: str | None = None) -> dict:
-        def action(c: MailConnector) -> dict:
-            c.mark_read(folder, uid)
-            return {"ok": True, "uid": uid}
+            return run(action, account_email)
 
-        return run(action, account_email)
+        @server.tool(description="Mark a message as read.")
+        async def mark_read(folder: str, uid: str, account_email: str | None = None) -> dict:
+            def action(c: MailConnector) -> dict:
+                c.mark_read(folder, uid)
+                return {"ok": True, "uid": uid}
 
-    @server.tool(description="Mark a message as unread.")
-    async def mark_unread(folder: str, uid: str, account_email: str | None = None) -> dict:
-        def action(c: MailConnector) -> dict:
-            c.mark_unread(folder, uid)
-            return {"ok": True, "uid": uid}
+            return run(action, account_email)
 
-        return run(action, account_email)
+        @server.tool(description="Mark a message as unread.")
+        async def mark_unread(
+            folder: str, uid: str, account_email: str | None = None
+        ) -> dict:
+            def action(c: MailConnector) -> dict:
+                c.mark_unread(folder, uid)
+                return {"ok": True, "uid": uid}
+
+            return run(action, account_email)
 
     return server
 

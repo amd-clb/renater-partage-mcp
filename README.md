@@ -94,6 +94,26 @@ instead of crashing.
 | `mark_read` | Mark a message as read |
 | `mark_unread` | Mark a message as unread |
 
+## Read-only mode
+
+IMAP/SMTP on Renater partage authenticate with the password only (no 2FA —
+that gate exists only on the webmail SSO). To shrink the risk of a leaked
+password, you can expose only the read tools:
+
+```yaml
+# config.yaml
+readonly: true
+```
+
+With `readonly: true` the server registers only `list_folders`,
+`list_messages`, `read_message`, `search_messages` and
+`download_attachment`. The send/folder/message-management tools are not
+registered at all, so an AI agent (or a leaked password) cannot send, delete,
+move or flag mail. If the config file cannot be read at all, the server also
+fails safe and exposes only the read tools.
+
+Restart the MCP server after changing this flag.
+
 ## Security notes
 
 - The password lives only in `.env` (git-ignored); keep it `chmod 600`.

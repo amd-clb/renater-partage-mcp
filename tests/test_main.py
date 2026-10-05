@@ -9,6 +9,14 @@ from src.config import AccountConfig, Config
 from src.errors import AuthError
 from src.models import FolderInfo
 
+READ_ONLY_TOOLS = {
+    "list_folders",
+    "list_messages",
+    "read_message",
+    "search_messages",
+    "download_attachment",
+}
+
 EXPECTED_TOOLS = {
     "list_folders",
     "list_messages",
@@ -114,6 +122,34 @@ def test_account_email_param_selects_account(monkeypatch):
     server = install(monkeypatch)
     call_tool(server, "list_folders", {"account_email": "second@example.fr"})
     assert StubConnector.built == ["second@example.fr"]
+
+
+def test_readonly_mode_registers_only_read_tools(monkeypatch):
+    def readonly_config() -> Config:
+        config = make_config()
+        config.readonly = True
+        return config
+
+    StubConnector.built = []
+    monkeypatch.setattr(main, "load_config", lambda *args, **kwargs: readonly_config())
+    monkeypatch.setattr(main, "MailConnector", StubConnector)
+    server = main.create_server()
+    names = {tool.name for tool in asyncio.run(server.list_tools())}
+    assert names == READ_ONLY_TOOLS
+
+
+def test_broken_config_fails_safe_to_read_only(monkeypatch):
+    def broken_config(*args, **kwargs) -> Config:
+        raise AuthError("nope")
+
+    StubConnector.built = []
+    monkeypatch.setattr(main, "load_config", broken_config)
+    monkeypatch.setattr(main, "MailConnector", StubConnector)
+    server = main.create_server()
+    names = {tool.name for tool in asyncio.run(server.list_tools())}
+    assert names == READ_ONLY_TOOLS
+    data = call_tool(server, "list_folders", {})
+    assert data["error"] == "auth"
 
 
 def test_download_attachment_returns_path_and_size(monkeypatch, tmp_path):

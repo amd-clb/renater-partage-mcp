@@ -23,9 +23,15 @@ class AccountConfig:
 
 
 class Config:
-    def __init__(self, accounts: list[AccountConfig], domains: dict[str, str]):
+    def __init__(
+        self,
+        accounts: list[AccountConfig],
+        domains: dict[str, str],
+        readonly: bool = False,
+    ):
         self.accounts = accounts
         self.domains = domains
+        self.readonly = readonly
 
     def get_account(self, email: str) -> AccountConfig:
         for account in self.accounts:
@@ -93,4 +99,4 @@ def load_config(config_path: Path, env_path: Path | None = None) -> Config:
             )
         )
 
-    return Config(accounts, domains)
+    return Config(accounts, domains, readonly=bool(raw.get("readonly", False)))

@@ -1,5 +1,6 @@
 accounts:
   - email: prenom.nom@example2.edu
+  - email: prenom.nom@example.edu
 domains:
   example.edu: mail.example.edu
   example2.edu: mail.example.edu
@@ -9,3 +10,5 @@ imap:
 smtp:
   port: 465
   ssl: true
+# Set to true to expose only read tools (no send/delete/move/flag tools).
+readonly: false
