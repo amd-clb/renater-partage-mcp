@@ -6,10 +6,12 @@ management of Renater Partage academic mailboxes (`prenom.nom@example.edu`,
 (read, folders, attachments) and SMTP (send).
 
 > **Warning — this connector can send mail.** With the default
-> `readonly: false`, an AI agent (or anything with access to it) can **send,
-> delete, move and flag mail on your behalf**, authenticated with your Renater
-> SSO password. You are responsible for every action taken with your account.
-> If you only need to read mail, set `readonly: true` in `config.yaml` — see
+> `readonly: false`, an AI agent can **send, delete, move and flag mail on your
+> behalf**, authenticated with your Renater SSO password. Every write tool
+> (send, delete, move, folder management, flag) requires a **user
+> confirmation token** before it executes — see
+> [Confirmation for write tools](#confirmation-for-write-tools). If you only
+> need to read mail, set `readonly: true` in `config.yaml` — see
 > [Read-only mode](#read-only-mode).
 
 ## Setup
@@ -61,7 +63,11 @@ order.
 }
 ```
 
-### opencode (`opencode.json`)
+### opencode
+
+The project includes an `opencode.json` that auto-registers the MCP server
+when you open this directory in opencode. If you need to configure it
+globally instead:
 
 ```json
 {
@@ -69,14 +75,14 @@ order.
     "renater-partage": {
       "type": "local",
       "command": ["uv", "run", "renater-partage-mcp"],
-      "cwd": "/path/to/renater_partage_connector",
+      "cwd": "/path/to/renater-partage-mcp",
       "enabled": true
     }
   }
 }
 ```
 
-The `cwd` must point to this project directory so `config.yaml` and `.env`
+The `cwd` must point to the project directory so `config.yaml` and `.env`
 are found. Alternatively set `RENATER_CONFIG_PATH` to the config file path.
 
 ## Tools
@@ -86,21 +92,41 @@ configured account (defaults to the first one). On failure a tool returns a
 structured error object `{"error": code, "message": ..., "hint": ...}`
 instead of crashing.
 
-| Tool | Description |
-| --- | --- |
-| `list_folders` | List mailbox folders with message counts |
-| `list_messages` | List recent messages in a folder (newest first; `limit`, `unread_only`) |
-| `read_message` | Read one full message (headers, body, attachment list) |
-| `search_messages` | Search a folder with an IMAP query string (e.g. `FROM alice SUBJECT budget`) |
-| `download_attachment` | Download one attachment into a local directory (default `downloads/`) |
-| `send_message` | Send an email with optional `cc` and local `attachments` (file paths) |
-| `create_folder` | Create a folder (intermediate folders must exist; duplicate is a no-op) |
-| `rename_folder` | Rename a folder |
-| `delete_folder` | Delete an empty folder |
-| `move_message` | Move a message to another folder; returns its new UID |
-| `delete_message` | Delete a message by UID |
-| `mark_read` | Mark a message as read |
-| `mark_unread` | Mark a message as unread |
+| Tool | Description | Confirmation |
+| --- | --- | --- |
+| `list_folders` | List mailbox folders with message counts | No |
+| `list_messages` | List recent messages in a folder (newest first; `limit`, `unread_only`) | No |
+| `read_message` | Read one full message (headers, body, attachment list) | No |
+| `search_messages` | Search a folder with an IMAP query string (e.g. `FROM alice SUBJECT budget`) | No |
+| `download_attachment` | Download one attachment into a local directory (default `downloads/`) | No |
+| `send_message` | Send an email with optional `cc` and local `attachments` (file paths) | Yes |
+| `create_folder` | Create a folder (intermediate folders must exist; duplicate is a no-op) | Yes |
+| `rename_folder` | Rename a folder | Yes |
+| `delete_folder` | Delete an empty folder | Yes |
+| `move_message` | Move a message to another folder; returns its new UID | Yes |
+| `delete_message` | Delete a message by UID | Yes |
+| `mark_read` | Mark a message as read | Yes |
+| `mark_unread` | Mark a message as unread | Yes |
+
+## Confirmation for write tools
+
+Every write tool (send, delete, move, folder management, flag) uses a
+**two-step confirmation** flow. The AI agent cannot execute a write action
+without explicit user approval.
+
+1. The agent calls the tool with the action parameters.
+2. The server returns `{"needs_confirmation": true, "token": "<uuid>",
+   "description": "...", "hint": "..."}` and does **not** execute the action.
+3. The agent presents the action to the user and asks for approval.
+4. If approved, the agent calls the same tool again with `confirm_token` set
+   to the token from step 2. The server then executes the action.
+
+Tokens are single-use and expire after 5 minutes. A tool called with an
+invalid or expired token returns an `invalid_token` error.
+
+Read tools (`list_folders`, `list_messages`, `read_message`,
+`search_messages`, `download_attachment`) execute immediately without
+confirmation.
 
 ## Read-only mode
 

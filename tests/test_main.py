@@ -58,6 +58,7 @@ def make_config() -> Config:
 
 class StubConnector:
     built: ClassVar[list[str]] = []
+    write_calls: ClassVar[list[str]] = []
 
     def __init__(self, account: AccountConfig):
         self.account = account
@@ -73,11 +74,34 @@ class StubConnector:
         return path
 
     def send_message(self, to, subject, body, cc=None, attachments=None) -> None:
-        return None
+        type(self).write_calls.append("send_message")
+
+    def create_folder(self, name) -> None:
+        type(self).write_calls.append("create_folder")
+
+    def rename_folder(self, old_name, new_name) -> None:
+        type(self).write_calls.append("rename_folder")
+
+    def delete_folder(self, name) -> None:
+        type(self).write_calls.append("delete_folder")
+
+    def move_message(self, folder, uid, destination_folder) -> str:
+        type(self).write_calls.append("move_message")
+        return "999"
+
+    def delete_message(self, folder, uid) -> None:
+        type(self).write_calls.append("delete_message")
+
+    def mark_read(self, folder, uid) -> None:
+        type(self).write_calls.append("mark_read")
+
+    def mark_unread(self, folder, uid) -> None:
+        type(self).write_calls.append("mark_unread")
 
 
 def install(monkeypatch) -> main.MCPServer:
     StubConnector.built = []
+    StubConnector.write_calls = []
     monkeypatch.setattr(main, "load_config", lambda *args, **kwargs: make_config())
     monkeypatch.setattr(main, "MailConnector", StubConnector)
     return main.create_server()
@@ -161,3 +185,110 @@ def test_download_attachment_returns_path_and_size(monkeypatch, tmp_path):
     )
     assert data["path"] == str(tmp_path / "a.pdf")
     assert data["size"] == 5
+
+
+# --- Confirmation flow tests ----------------------------------------------
+
+
+def test_send_message_requires_confirmation(monkeypatch):
+    server = install(monkeypatch)
+    data = call_tool(
+        server, "send_message",
+        {"to": "dest@example.fr", "subject": "Hello", "body": "Hi"},
+    )
+    assert data["needs_confirmation"] is True
+    assert "token" in data
+    assert data["action"] == "send_message"
+    assert data["description"]
+    assert StubConnector.write_calls == []
+
+
+def test_send_message_executes_with_valid_token(monkeypatch):
+    server = install(monkeypatch)
+    first = call_tool(
+        server, "send_message",
+        {"to": "dest@example.fr", "subject": "Hello", "body": "Hi"},
+    )
+    token = first["token"]
+    second = call_tool(
+        server, "send_message",
+        {"to": "dest@example.fr", "subject": "Hello", "body": "Hi", "confirm_token": token},
+    )
+    assert second.get("sent") is True
+    assert StubConnector.write_calls == ["send_message"]
+
+
+def test_send_message_rejects_invalid_token(monkeypatch):
+    server = install(monkeypatch)
+    data = call_tool(
+        server, "send_message",
+        {"to": "dest@example.fr", "subject": "Hello", "body": "Hi",
+         "confirm_token": "fake-token-123"},
+    )
+    assert data["error"] == "invalid_token"
+    assert StubConnector.write_calls == []
+
+
+def test_token_is_single_use(monkeypatch):
+    server = install(monkeypatch)
+    first = call_tool(
+        server, "send_message",
+        {"to": "dest@example.fr", "subject": "Hello", "body": "Hi"},
+    )
+    token = first["token"]
+    call_tool(
+        server, "send_message",
+        {"to": "dest@example.fr", "subject": "Hello", "body": "Hi", "confirm_token": token},
+    )
+    assert StubConnector.write_calls == ["send_message"]
+    second = call_tool(
+        server, "send_message",
+        {"to": "dest@example.fr", "subject": "Hello", "body": "Hi", "confirm_token": token},
+    )
+    assert second["error"] == "invalid_token"
+    assert len(StubConnector.write_calls) == 1
+
+
+def test_all_write_tools_require_confirmation(monkeypatch):
+    server = install(monkeypatch)
+    write_tools = {
+        "send_message": {"to": "a@b.fr", "subject": "S", "body": "B"},
+        "create_folder": {"name": "NewFolder"},
+        "rename_folder": {"old_name": "A", "new_name": "B"},
+        "delete_folder": {"name": "A"},
+        "move_message": {"folder": "INBOX", "uid": "1", "destination_folder": "Sent"},
+        "delete_message": {"folder": "INBOX", "uid": "1"},
+        "mark_read": {"folder": "INBOX", "uid": "1"},
+        "mark_unread": {"folder": "INBOX", "uid": "1"},
+    }
+    for name, args in write_tools.items():
+        data = call_tool(server, name, args)
+        assert data.get("needs_confirmation") is True, f"{name} should require confirmation"
+        assert "token" in data, f"{name} should return a token"
+    assert StubConnector.write_calls == []
+
+
+def test_readonly_mode_blocks_write_tools_even_with_confirmation(monkeypatch):
+    def readonly_config() -> Config:
+        config = make_config()
+        config.readonly = True
+        return config
+
+    StubConnector.built = []
+    StubConnector.write_calls = []
+    monkeypatch.setattr(main, "load_config", lambda *args, **kwargs: readonly_config())
+    monkeypatch.setattr(main, "MailConnector", StubConnector)
+    server = main.create_server()
+    names = {tool.name for tool in asyncio.run(server.list_tools())}
+    assert "send_message" not in names
+    assert "delete_message" not in names
+
+
+def test_confirmation_store_expiry(monkeypatch):
+    from src.main import ConfirmationStore
+
+    store = ConfirmationStore(ttl=0.001)
+    token = store.create({"key": "value"})
+    import time as _time
+    _time.sleep(0.01)
+    assert store.validate(token) is None

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -14,13 +16,51 @@ from .connector import MailConnector
 from .errors import ConfigError, ConnectorError
 
 
+class ConfirmationStore:
+    """In-memory store for one-shot write-action confirmation tokens."""
+
+    def __init__(self, ttl: float = 300.0):
+        self._pending: dict[str, tuple[float, dict]] = {}
+        self._ttl = ttl
+
+    def create(self, details: dict) -> str:
+        token = str(uuid.uuid4())
+        self._pending[token] = (time.monotonic(), details)
+        self._cleanup()
+        return token
+
+    def validate(self, token: str) -> dict | None:
+        entry = self._pending.pop(token, None)
+        if entry is None:
+            return None
+        created_at, details = entry
+        if time.monotonic() - created_at > self._ttl:
+            return None
+        return details
+
+    def _cleanup(self) -> None:
+        now = time.monotonic()
+        expired = [t for t, (ts, _) in self._pending.items() if now - ts > self._ttl]
+        for t in expired:
+            del self._pending[t]
+
+
 def _error_dict(exc: ConnectorError) -> dict:
     return {"error": exc.code, "message": str(exc), "hint": exc.hint}
+
+
+def _invalid_token() -> dict:
+    return {
+        "error": "invalid_token",
+        "message": "Confirmation token is invalid or expired.",
+        "hint": "Call the tool again without confirm_token to obtain a fresh token.",
+    }
 
 
 def create_server() -> MCPServer:
     server = MCPServer(name="renater-partage")
     state: dict[str, Any] = {"config": None, "config_error": None, "connectors": {}}
+    confirm_store = ConfirmationStore()
 
     override = os.environ.get("RENATER_CONFIG_PATH")
     config_path = Path(override) if override else Path("config.yaml")
@@ -29,7 +69,6 @@ def create_server() -> MCPServer:
     except ConnectorError as exc:
         state["config_error"] = exc
 
-    # Fail-safe: without a readable config only read-only tools are exposed.
     readonly = state["config"].readonly if state["config"] is not None else True
 
     def get_config() -> Config:
@@ -123,87 +162,255 @@ def create_server() -> MCPServer:
 
     if not readonly:
 
-        @server.tool(description="Send an email with optional cc recipients and attachments.")
+        @server.tool(description="Send an email. Requires user confirmation before execution.")
         async def send_message(
             to: str,
             subject: str,
             body: str,
             cc: list[str] | None = None,
             attachments: list[str] | None = None,
+            confirm_token: str | None = None,
             account_email: str | None = None,
         ) -> dict:
-            cc = list(cc or [])
-            files = [Path(p) for p in (attachments or [])]
+            details = {
+                "to": to,
+                "subject": subject,
+                "body": body,
+                "cc": list(cc or []),
+                "attachments": list(attachments or []),
+                "account_email": account_email,
+            }
+            if confirm_token is None:
+                token = confirm_store.create(details)
+                return {
+                    "needs_confirmation": True,
+                    "token": token,
+                    "action": "send_message",
+                    "description": f"Send email to {to} (subject: {subject})",
+                    "hint": "Ask the user to approve. If approved, call again with confirm_token.",
+                }
+            validated = confirm_store.validate(confirm_token)
+            if validated is None:
+                return _invalid_token()
 
             def action(c: MailConnector) -> dict:
-                c.send_message(to, subject, body, cc=cc, attachments=files)
-                return {"sent": True, "to": [to, *cc], "subject": subject}
+                c.send_message(
+                    validated["to"],
+                    validated["subject"],
+                    validated["body"],
+                    cc=validated["cc"],
+                    attachments=[Path(p) for p in validated["attachments"]],
+                )
+                return {
+                    "sent": True,
+                    "to": [validated["to"], *validated["cc"]],
+                    "subject": validated["subject"],
+                }
 
-            return run(action, account_email)
+            return run(action, validated["account_email"])
 
-        @server.tool(description="Create a folder; intermediate folders must exist.")
-        async def create_folder(name: str, account_email: str | None = None) -> dict:
+        @server.tool(description="Create a folder. Requires user confirmation before execution.")
+        async def create_folder(
+            name: str,
+            confirm_token: str | None = None,
+            account_email: str | None = None,
+        ) -> dict:
+            details = {"name": name, "account_email": account_email}
+            if confirm_token is None:
+                token = confirm_store.create(details)
+                return {
+                    "needs_confirmation": True,
+                    "token": token,
+                    "action": "create_folder",
+                    "description": f"Create folder '{name}'",
+                    "hint": "Ask the user to approve. If approved, call again with confirm_token.",
+                }
+            validated = confirm_store.validate(confirm_token)
+            if validated is None:
+                return _invalid_token()
+
             def action(c: MailConnector) -> dict:
-                c.create_folder(name)
-                return {"ok": True, "name": name}
+                c.create_folder(validated["name"])
+                return {"ok": True, "name": validated["name"]}
 
-            return run(action, account_email)
+            return run(action, validated["account_email"])
 
-        @server.tool(description="Rename a folder.")
+        @server.tool(description="Rename a folder. Requires user confirmation before execution.")
         async def rename_folder(
-            old_name: str, new_name: str, account_email: str | None = None
+            old_name: str,
+            new_name: str,
+            confirm_token: str | None = None,
+            account_email: str | None = None,
         ) -> dict:
+            details = {
+                "old_name": old_name,
+                "new_name": new_name,
+                "account_email": account_email,
+            }
+            if confirm_token is None:
+                token = confirm_store.create(details)
+                return {
+                    "needs_confirmation": True,
+                    "token": token,
+                    "action": "rename_folder",
+                    "description": f"Rename folder '{old_name}' to '{new_name}'",
+                    "hint": "Ask the user to approve. If approved, call again with confirm_token.",
+                }
+            validated = confirm_store.validate(confirm_token)
+            if validated is None:
+                return _invalid_token()
+
             def action(c: MailConnector) -> dict:
-                c.rename_folder(old_name, new_name)
-                return {"ok": True, "old_name": old_name, "new_name": new_name}
+                c.rename_folder(validated["old_name"], validated["new_name"])
+                return {
+                    "ok": True,
+                    "old_name": validated["old_name"],
+                    "new_name": validated["new_name"],
+                }
 
-            return run(action, account_email)
+            return run(action, validated["account_email"])
 
-        @server.tool(description="Delete an empty folder.")
-        async def delete_folder(name: str, account_email: str | None = None) -> dict:
+        @server.tool(description="Delete an empty folder. Requires user confirmation before execution.")
+        async def delete_folder(
+            name: str,
+            confirm_token: str | None = None,
+            account_email: str | None = None,
+        ) -> dict:
+            details = {"name": name, "account_email": account_email}
+            if confirm_token is None:
+                token = confirm_store.create(details)
+                return {
+                    "needs_confirmation": True,
+                    "token": token,
+                    "action": "delete_folder",
+                    "description": f"Delete folder '{name}'",
+                    "hint": "Ask the user to approve. If approved, call again with confirm_token.",
+                }
+            validated = confirm_store.validate(confirm_token)
+            if validated is None:
+                return _invalid_token()
+
             def action(c: MailConnector) -> dict:
-                c.delete_folder(name)
-                return {"ok": True, "name": name}
+                c.delete_folder(validated["name"])
+                return {"ok": True, "name": validated["name"]}
 
-            return run(action, account_email)
+            return run(action, validated["account_email"])
 
-        @server.tool(description="Move a message to another folder; returns its new UID.")
+        @server.tool(description="Move a message to another folder. Requires user confirmation before execution.")
         async def move_message(
-            folder: str, uid: str, destination_folder: str, account_email: str | None = None
+            folder: str,
+            uid: str,
+            destination_folder: str,
+            confirm_token: str | None = None,
+            account_email: str | None = None,
         ) -> dict:
+            details = {
+                "folder": folder,
+                "uid": uid,
+                "destination_folder": destination_folder,
+                "account_email": account_email,
+            }
+            if confirm_token is None:
+                token = confirm_store.create(details)
+                return {
+                    "needs_confirmation": True,
+                    "token": token,
+                    "action": "move_message",
+                    "description": f"Move message (UID {uid}) from '{folder}' to '{destination_folder}'",
+                    "hint": "Ask the user to approve. If approved, call again with confirm_token.",
+                }
+            validated = confirm_store.validate(confirm_token)
+            if validated is None:
+                return _invalid_token()
+
             def action(c: MailConnector) -> dict:
-                new_uid = c.move_message(folder, uid, destination_folder)
+                new_uid = c.move_message(
+                    validated["folder"], validated["uid"], validated["destination_folder"]
+                )
                 return {"ok": True, "new_uid": new_uid}
 
-            return run(action, account_email)
+            return run(action, validated["account_email"])
 
-        @server.tool(description="Delete a message from a folder.")
+        @server.tool(description="Delete a message. Requires user confirmation before execution.")
         async def delete_message(
-            folder: str, uid: str, account_email: str | None = None
+            folder: str,
+            uid: str,
+            confirm_token: str | None = None,
+            account_email: str | None = None,
         ) -> dict:
+            details = {"folder": folder, "uid": uid, "account_email": account_email}
+            if confirm_token is None:
+                token = confirm_store.create(details)
+                return {
+                    "needs_confirmation": True,
+                    "token": token,
+                    "action": "delete_message",
+                    "description": f"Delete message (UID {uid}) from '{folder}'",
+                    "hint": "Ask the user to approve. If approved, call again with confirm_token.",
+                }
+            validated = confirm_store.validate(confirm_token)
+            if validated is None:
+                return _invalid_token()
+
             def action(c: MailConnector) -> dict:
-                c.delete_message(folder, uid)
-                return {"ok": True, "uid": uid}
+                c.delete_message(validated["folder"], validated["uid"])
+                return {"ok": True, "uid": validated["uid"]}
 
-            return run(action, account_email)
+            return run(action, validated["account_email"])
 
-        @server.tool(description="Mark a message as read.")
-        async def mark_read(folder: str, uid: str, account_email: str | None = None) -> dict:
+        @server.tool(description="Mark a message as read. Requires user confirmation before execution.")
+        async def mark_read(
+            folder: str,
+            uid: str,
+            confirm_token: str | None = None,
+            account_email: str | None = None,
+        ) -> dict:
+            details = {"folder": folder, "uid": uid, "account_email": account_email}
+            if confirm_token is None:
+                token = confirm_store.create(details)
+                return {
+                    "needs_confirmation": True,
+                    "token": token,
+                    "action": "mark_read",
+                    "description": f"Mark message (UID {uid}) in '{folder}' as read",
+                    "hint": "Ask the user to approve. If approved, call again with confirm_token.",
+                }
+            validated = confirm_store.validate(confirm_token)
+            if validated is None:
+                return _invalid_token()
+
             def action(c: MailConnector) -> dict:
-                c.mark_read(folder, uid)
-                return {"ok": True, "uid": uid}
+                c.mark_read(validated["folder"], validated["uid"])
+                return {"ok": True, "uid": validated["uid"]}
 
-            return run(action, account_email)
+            return run(action, validated["account_email"])
 
-        @server.tool(description="Mark a message as unread.")
+        @server.tool(description="Mark a message as unread. Requires user confirmation before execution.")
         async def mark_unread(
-            folder: str, uid: str, account_email: str | None = None
+            folder: str,
+            uid: str,
+            confirm_token: str | None = None,
+            account_email: str | None = None,
         ) -> dict:
-            def action(c: MailConnector) -> dict:
-                c.mark_unread(folder, uid)
-                return {"ok": True, "uid": uid}
+            details = {"folder": folder, "uid": uid, "account_email": account_email}
+            if confirm_token is None:
+                token = confirm_store.create(details)
+                return {
+                    "needs_confirmation": True,
+                    "token": token,
+                    "action": "mark_unread",
+                    "description": f"Mark message (UID {uid}) in '{folder}' as unread",
+                    "hint": "Ask the user to approve. If approved, call again with confirm_token.",
+                }
+            validated = confirm_store.validate(confirm_token)
+            if validated is None:
+                return _invalid_token()
 
-            return run(action, account_email)
+            def action(c: MailConnector) -> dict:
+                c.mark_unread(validated["folder"], validated["uid"])
+                return {"ok": True, "uid": validated["uid"]}
+
+            return run(action, validated["account_email"])
 
     return server
 

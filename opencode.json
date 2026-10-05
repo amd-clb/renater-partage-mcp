@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "renater-partage": {
+      "type": "local",
+      "command": ["uv", "run", "renater-partage-mcp"],
+      "enabled": true
+    }
+  }
+}
