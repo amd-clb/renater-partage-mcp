@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import imaplib
+import mimetypes
 import re
 from contextlib import contextmanager
-from email import message_from_bytes
-from email.header import decode_header
+from email import encoders, message_from_bytes
+from email.header import Header, decode_header
 from email.message import Message
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from pathlib import Path
+from smtplib import SMTP_SSL, SMTPException
 
 from imap_tools import MailBox
 from imap_tools.errors import (
+    MailboxFolderCreateError,
+    MailboxFolderDeleteError,
+    MailboxFolderRenameError,
     MailboxFolderSelectError,
     MailboxLoginError,
     MailboxLogoutError,
@@ -22,6 +30,7 @@ from .errors import (
     FolderNotFoundError,
     MessageNotFoundError,
     NetworkError,
+    SendError,
 )
 from .models import AttachmentInfo, FolderInfo, MessageSummary, ParsedMessage
 
@@ -280,6 +289,132 @@ class MailConnector:
                 raise ConfigError(f"refusing to write outside destination directory: {target}")
             target.write_bytes(attachment.payload)
             return target
+
+    def send_message(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        cc: list[str] | None = None,
+        attachments: list[Path] | None = None,
+    ) -> None:
+        cc = list(cc or [])
+        files = [Path(path) for path in (attachments or [])]
+        for path in files:
+            if not path.is_file():
+                raise ConfigError(f"attachment file not found: {path}")
+        if files:
+            message = MIMEMultipart("mixed")
+            message.attach(MIMEText(body, "plain", "utf-8"))
+            for path in files:
+                message.attach(self._build_attachment(path))
+        else:
+            message = MIMEText(body, "plain", "utf-8")
+        message["From"] = self.account.email
+        message["To"] = to
+        if cc:
+            message["Cc"] = ", ".join(cc)
+        try:
+            subject.encode("ascii")
+            message["Subject"] = subject
+        except UnicodeEncodeError:
+            message["Subject"] = Header(subject, "utf-8")
+        try:
+            with SMTP_SSL(self.account.smtp_host, self.account.smtp_port) as server:
+                server.login(self.account.email, self.account.password)
+                server.sendmail(self.account.email, [to, *cc], message.as_string())
+        except SMTPException as exc:
+            raise SendError(f"SMTP error while sending message: {exc}") from exc
+
+    @staticmethod
+    def _build_attachment(path: Path) -> MIMEBase:
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        major, _, minor = content_type.partition("/")
+        part = MIMEBase(major, minor or "octet-stream")
+        part.set_payload(path.read_bytes())
+        encoders.encode_base64(part)
+        part.add_header(
+            "Content-Disposition", "attachment", filename=sanitize_filename(path.name)
+        )
+        return part
+
+    def create_folder(self, name: str) -> None:
+        with self._session() as box:
+            if "/" in name:
+                parent = name.rsplit("/", 1)[0]
+                if not box.folder.exists(parent):
+                    raise FolderNotFoundError(f"parent folder not found: {parent}")
+            if not box.folder.exists(name):
+                try:
+                    box.folder.create(name)
+                except MailboxFolderCreateError:
+                    pass
+
+    def rename_folder(self, old_name: str, new_name: str) -> None:
+        with self._session() as box:
+            if not box.folder.exists(old_name):
+                raise FolderNotFoundError(f"folder not found: {old_name}")
+            try:
+                box.folder.rename(old_name, new_name)
+            except MailboxFolderRenameError as exc:
+                raise FolderNotFoundError(f"cannot rename folder {old_name}: {exc}") from exc
+
+    def delete_folder(self, name: str) -> None:
+        with self._session() as box:
+            if not box.folder.exists(name):
+                raise FolderNotFoundError(f"folder not found: {name}")
+            try:
+                box.folder.delete(name)
+            except MailboxFolderDeleteError as exc:
+                raise FolderNotFoundError(
+                    f"cannot delete folder {name} (not empty or in use): {exc}"
+                ) from exc
+
+    def move_message(self, folder: str, uid: str, destination_folder: str) -> str:
+        with self._session() as box:
+            self._select(box, folder)
+            if not self._uid_exists(box, uid):
+                raise MessageNotFoundError(f"message not found: uid {uid} in folder {folder}")
+            if not box.folder.exists(destination_folder):
+                raise FolderNotFoundError(f"folder not found: {destination_folder}")
+            result = box.move(uid, destination_folder)
+            return self._new_uid_from_move(result, uid)
+
+    def delete_message(self, folder: str, uid: str) -> None:
+        with self._session() as box:
+            self._select(box, folder)
+            if not self._uid_exists(box, uid):
+                raise MessageNotFoundError(f"message not found: uid {uid} in folder {folder}")
+            box.delete(uid)
+
+    def mark_read(self, folder: str, uid: str) -> None:
+        self._set_seen(folder, uid, seen=True)
+
+    def mark_unread(self, folder: str, uid: str) -> None:
+        self._set_seen(folder, uid, seen=False)
+
+    def _set_seen(self, folder: str, uid: str, *, seen: bool) -> None:
+        with self._session() as box:
+            self._select(box, folder)
+            if not self._uid_exists(box, uid):
+                raise MessageNotFoundError(f"message not found: uid {uid} in folder {folder}")
+            box.flag(uid, "\\Seen", seen)
+
+    @staticmethod
+    def _uid_exists(box: MailBox, uid: str) -> bool:
+        return bool(list(box.fetch(uid_list=uid, mark_seen=False)))
+
+    @staticmethod
+    def _new_uid_from_move(move_result, original_uid: str) -> str:
+        if move_result:
+            try:
+                line = move_result[0][0][1][0]
+                parts = line.split()
+                if len(parts) >= 2:
+                    return parts[-1].decode("utf-8", "replace")
+            except (IndexError, TypeError, AttributeError):
+                pass
+        return original_uid
 
 
 def sanitize_filename(name: str) -> str:
